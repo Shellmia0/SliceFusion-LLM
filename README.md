@@ -1,14 +1,16 @@
-# CodeFusion: 基于调用链的代码分片融合技术研究
+# SliceFusion-LLM: 基于调用链的代码分片融合技术研究
 
 ## 摘要
 
-本研究提出了一种基于函数调用链的代码分片融合技术（CodeFusion），旨在将目标代码片段智能地拆分并嵌入到已有程序的多个函数中。该技术融合了程序分析、编译原理和大语言模型（LLM）三大领域的方法论。
+本研究提出了一种基于函数调用链的代码分片融合技术（SliceFusion-LLM），旨在将目标代码片段智能地拆分并嵌入到已有程序的多个函数中。该技术融合了程序分析、编译原理和大语言模型（LLM）三大领域的方法论。
 
 具体而言，本研究首先通过词法分析和语法解析构建目标程序的控制流图（Control Flow Graph, CFG），随后基于数据流分析框架计算各基本块的支配关系（Dominance Relation），识别出程序执行的必经点（Critical Point）。在此基础上，利用大语言模型对待融合代码进行语义理解和智能拆分，生成满足依赖约束的代码片段序列。最后，将各片段精确插入到调用链函数的融合点位置，并通过全局变量或参数传递机制实现跨函数的状态共享。
 
+系统还集成了**多层验证机制**，包括基于规则的语法结构验证和基于 LLM 的语义正确性审查，确保融合后代码的正确性。
+
 实验表明，本方法能够有效地将完整代码逻辑分散到多个函数中执行，同时保证程序语义的等价性。该技术可广泛应用于代码混淆、软件水印嵌入、安全漏洞测试、软件保护等领域，具有重要的理论价值和实践意义。
 
-**关键词**：代码融合；控制流图；支配分析；大语言模型；程序变换
+**关键词**：代码融合；控制流图；支配分析；大语言模型；程序变换；代码验证
 
 ---
 
@@ -365,11 +367,11 @@ $$
 
 ### 3.1 系统架构
 
-CodeFusion 系统采用模块化设计，由五个核心组件构成：
+SliceFusion-LLM 系统采用模块化设计，由六个核心层次构成：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           CodeFusion System                                  │
+│                        SliceFusion-LLM System                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────┐                                                        │
@@ -422,6 +424,18 @@ CodeFusion 系统采用模块化设计，由五个核心组件构成：
 │  └────────────────────────────────────────────────────────┼────────────┘   │
 │                                                           │                 │
 │                                                           ▼                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                      Verification Layer                              │   │
+│  │  ┌─────────────────────────────────────────────────────────────┐    │   │
+│  │  │                   Verification Agent                         │    │   │
+│  │  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │    │   │
+│  │  │  │ 语法验证器  │───▶│ 语义审查器  │───▶│ 综合报告    │      │    │   │
+│  │  │  │ (规则检查)  │    │ (LLM 审查)  │    │ 生成        │      │    │   │
+│  │  │  └─────────────┘    └─────────────┘    └──────┬──────┘      │    │   │
+│  │  └──────────────────────────────────────────────┼──────────────┘    │   │
+│  └─────────────────────────────────────────────────┼───────────────────┘   │
+│                                                    │                        │
+│                                                    ▼                        │
 │  ┌─────────────────┐                                                        │
 │  │  Output Layer   │                                                        │
 │  │  ┌───────────┐  │                                                        │
@@ -672,14 +686,15 @@ $$
 
 #### 3.5.1 完整算法
 
-**算法 3.2：CodeFusion 主算法**
+**算法 3.2：SliceFusion-LLM 主算法**
 
 ```
 输入: 
   - 目标代码 C_target
   - 调用链函数集 F = {f_1, ..., f_n}
   - 传递方法 M ∈ {global, parameter}
-输出: 融合后的函数集 F' = {f_1', ..., f_n'}
+  - 验证选项 V ∈ {full, syntax_only, skip}
+输出: 融合后的函数集 F' = {f_1', ..., f_n'} 及验证报告 R
 
 Phase 1: 分析阶段
 1:  for i = 1 to n do
@@ -712,9 +727,21 @@ Phase 4: 融合阶段
 22:     f_i' ← InsertCodeAtPoint(f_i, p_i, c_i)
 23: end for
 
-Phase 5: 输出阶段
-24: output ← CombineCode(state_code, F')
-25: return output
+Phase 5: 验证阶段
+24: if V ≠ skip then
+25:     R ← ∅
+26:     for i = 1 to n do
+27:         r_syntax ← SyntaxValidator.validate(f_i')
+28:         if V = full then
+29:             r_semantic ← SemanticReviewer.review(f_i', c_i)
+30:         end if
+31:         R ← R ∪ {VerificationAgent.combine(r_syntax, r_semantic)}
+32:     end for
+33: end if
+
+Phase 6: 输出阶段
+34: output ← CombineCode(state_code, F')
+35: return (output, R)
 ```
 
 #### 3.5.2 复杂度分析
@@ -728,7 +755,9 @@ Phase 5: 输出阶段
 | LLM 拆分 | $O(T_{LLM})$ | $O(|C_{target}|)$ |
 | 状态生成 | $O(k)$ | $O(k)$ |
 | 代码融合 | $O(n \cdot m)$ | $O(n \cdot m)$ |
-| **总计** | $O(n \cdot m^2 + T_{LLM})$ | $O(n \cdot m^2)$ |
+| 语法验证 | $O(n \cdot m)$ | $O(n)$ |
+| 语义审查 | $O(n \cdot T_{LLM})$ | $O(n \cdot m)$ |
+| **总计** | $O(n \cdot m^2 + n \cdot T_{LLM})$ | $O(n \cdot m^2)$ |
 
 其中 $T_{LLM}$ 为 LLM API 调用延迟。
 
@@ -768,13 +797,10 @@ $$
 ### 4.1 项目结构
 
 ```
-Vul/
+SliceFusion-LLM/
 ├── README.md                      # 项目文档
-├── requirements.txt               # 依赖列表
 │
 ├── data/                          # 数据集目录
-│   ├── primevul_train.jsonl       # 训练集（原始漏洞数据）
-│   ├── primevul_train_paired.jsonl
 │   ├── primevul_valid.jsonl       # 验证集
 │   ├── primevul_valid_paired.jsonl
 │   ├── primevul_test.jsonl        # 测试集
@@ -787,10 +813,21 @@ Vul/
 │
 ├── src/                           # 核心源代码
 │   ├── __init__.py               # 包初始化
+│   ├── requirements.txt          # 依赖列表
+│   │
+│   │   # 分析模块
 │   ├── cfg_analyzer.py           # CFG 分析器
 │   ├── dominator_analyzer.py     # 支配节点分析器
+│   │
+│   │   # 拆分与融合模块
 │   ├── llm_splitter.py           # LLM 代码拆分器
 │   ├── code_fusion.py            # 代码融合引擎
+│   │
+│   │   # 验证模块
+│   ├── syntax_validator.py       # 语法结构验证器
+│   ├── semantic_reviewer.py      # LLM 语义审查器
+│   ├── verification_agent.py     # 验证代理（整合验证）
+│   │
 │   └── main.py                   # 主程序入口
 │
 ├── output/                        # 输出目录
@@ -799,12 +836,10 @@ Vul/
 │   │   └── fused_group_*.c       # 各组融合代码
 │   ├── primevul_valid_grouped.json
 │   ├── primevul_valid_grouped_depth_*.json
-│   └── fusion_results.json
+│   ├── fusion_results.json
+│   └── test_verification.json    # 验证测试结果
 │
-└── SliceFusion/                   # 参考项目（C++ LLVM 实现）
-    └── src/
-        ├── Fusion/
-        └── Util/
+└── .gitignore
 ```
 
 ### 4.2 核心模块详解
@@ -919,17 +954,113 @@ $$
 \end{cases}
 $$
 
+#### 4.2.5 语法验证器 (`syntax_validator.py`)
+
+**主要功能**：
+- 括号匹配检查（花括号、圆括号、方括号）
+- 字符串/字符引号匹配
+- 语句完整性检查（分号验证）
+- 函数结构完整性验证
+
+**核心类**：
+
+```python
+@dataclass
+class SyntaxError:
+    level: ErrorLevel     # error/warning/info
+    message: str
+    line: int = 0
+    column: int = 0
+    context: str = ""
+
+@dataclass
+class ValidationResult:
+    valid: bool
+    errors: List[SyntaxError]
+    warnings: List[SyntaxError]
+```
+
+**验证流程**：
+1. 预处理：移除代码注释
+2. 括号匹配检查
+3. 引号匹配检查
+4. 语句完整性检查
+5. 函数结构验证
+
+#### 4.2.6 语义审查器 (`semantic_reviewer.py`)
+
+**主要功能**：
+使用 LLM 进行深度语义审查，检查：
+- 插入位置是否合理
+- 变量使用是否正确
+- 数据流是否正确
+- 是否破坏原函数逻辑
+
+**核心类**：
+
+```python
+class IssueLevel(Enum):
+    CRITICAL = "critical"    # 严重问题
+    MAJOR = "major"          # 主要问题
+    MINOR = "minor"          # 次要问题
+    SUGGESTION = "suggestion" # 改进建议
+
+@dataclass
+class ReviewResult:
+    valid: bool
+    confidence: float        # 置信度 0.0-1.0
+    issues: List[SemanticIssue]
+    suggestions: List[str]
+```
+
+#### 4.2.7 验证代理 (`verification_agent.py`)
+
+**主要功能**：
+整合语法验证和语义审查，提供统一的验证接口。
+
+**验证状态**：
+
+```python
+class VerificationStatus(Enum):
+    PASSED = "passed"                    # 完全通过
+    PASSED_WITH_WARNINGS = "passed_with_warnings"  # 通过但有警告
+    FAILED = "failed"                    # 验证失败
+    SKIPPED = "skipped"                  # 跳过验证
+```
+
+**验证流程**：
+
+```
+融合代码 ──▶ 语法验证器 ──▶ 语义审查器 ──▶ 综合报告
+              │              │              │
+              ▼              ▼              ▼
+           括号匹配      插入合理性      验证状态
+           引号匹配      变量正确性      错误列表
+           语句完整      数据流分析      建议列表
+```
+
 ### 4.3 环境配置
 
 #### 4.3.1 依赖安装
 
 ```bash
 # 创建虚拟环境
-conda create -n vul python=3.10
-conda activate vul
+conda create -n slicefusion python=3.10
+conda activate slicefusion
 
 # 安装依赖
-pip install openai networkx graphviz
+pip install -r src/requirements.txt
+```
+
+**依赖列表** (`src/requirements.txt`)：
+
+```
+openai>=1.0.0
+tree-sitter>=0.20.0
+tree-sitter-c>=0.20.0
+tree-sitter-cpp>=0.20.0
+networkx>=3.0
+graphviz>=0.20
 ```
 
 #### 4.3.2 API 配置
@@ -975,7 +1106,32 @@ python src/main.py \
     --max-groups 10
 ```
 
-#### 4.4.3 仅分析模式
+#### 4.4.3 验证模式
+
+```bash
+# 完整验证（语法 + 语义审查）
+python src/main.py \
+    --input output/primevul_valid_grouped_depth_4.json \
+    --output output/fusion_results.json \
+    --target-code "..." \
+    --verify full
+
+# 仅语法验证（快速模式，无需 LLM）
+python src/main.py \
+    --input output/primevul_valid_grouped_depth_4.json \
+    --output output/fusion_results.json \
+    --target-code "..." \
+    --verify syntax
+
+# 跳过验证
+python src/main.py \
+    --input output/primevul_valid_grouped_depth_4.json \
+    --output output/fusion_results.json \
+    --target-code "..." \
+    --verify skip
+```
+
+#### 4.4.4 仅分析模式
 
 ```bash
 python src/main.py \
@@ -1182,18 +1338,22 @@ $$
 T = T_{load} + T_{analyze} + T_{llm} + T_{fuse} + T_{output}
 $$
 
-**各阶段耗时**（处理 50 个组）：
+**各阶段耗时**（处理 50 个组，开启完整验证）：
 
 | 阶段 | 耗时 (s) | 占比 |
 |------|---------|------|
-| 数据加载 $T_{load}$ | 0.5 | 1.5% |
-| CFG/支配分析 $T_{analyze}$ | 2.3 | 6.9% |
-| LLM 调用 $T_{llm}$ | 28.5 | 85.6% |
-| 代码融合 $T_{fuse}$ | 1.2 | 3.6% |
-| 文件输出 $T_{output}$ | 0.8 | 2.4% |
-| **总计** | **33.3** | **100%** |
+| 数据加载 $T_{load}$ | 0.5 | 1.0% |
+| CFG/支配分析 $T_{analyze}$ | 2.3 | 4.6% |
+| LLM 拆分 $T_{llm\_split}$ | 28.5 | 57.0% |
+| 代码融合 $T_{fuse}$ | 1.2 | 2.4% |
+| 语法验证 $T_{syntax}$ | 0.3 | 0.6% |
+| 语义审查 $T_{semantic}$ | 16.4 | 32.8% |
+| 文件输出 $T_{output}$ | 0.8 | 1.6% |
+| **总计** | **50.0** | **100%** |
 
-可见 **LLM 调用是主要瓶颈**，占总时间的 85.6%。
+可见 **LLM 调用是主要瓶颈**（拆分 + 语义审查），占总时间的约 90%。
+
+> 💡 **优化建议**：仅启用语法验证模式可将处理时间降低至约 34 秒。
 
 #### 5.4.2 内存使用
 
@@ -1335,7 +1495,7 @@ $$
 
 ### 7.1 研究总结
 
-本研究提出并实现了 CodeFusion 代码分片融合技术，主要贡献包括：
+本研究提出并实现了 SliceFusion-LLM 代码分片融合技术，主要贡献包括：
 
 1. **理论贡献**：
    - 形式化定义了基于调用链的代码融合问题
@@ -1346,6 +1506,7 @@ $$
    - 实现了完整的 CFG 构建和支配分析流程
    - 开发了 LLM 辅助的智能代码拆分方法
    - 设计了支持多策略的代码融合框架
+   - **实现了多层验证机制（语法验证 + 语义审查）**
 
 3. **实验贡献**：
    - 在真实数据集上验证了方法的有效性
@@ -1358,8 +1519,8 @@ $$
 
 1. **控制流支持有限**：未完全支持复杂控制流（如 `goto`、异常处理）
 2. **语言限制**：目前仅支持 C/C++ 代码
-3. **LLM 依赖**：拆分质量依赖于 LLM 的理解能力
-4. **编译验证缺失**：未集成编译正确性验证
+3. **LLM 依赖**：拆分和语义审查质量依赖于 LLM 的理解能力
+4. ~~**编译验证缺失**~~：已集成基于规则的语法验证和 LLM 语义审查
 
 ### 7.3 未来工作
 
@@ -1377,10 +1538,10 @@ $$
    - 引入多轮对话机制，处理复杂代码
    - 探索本地模型部署，降低延迟
 
-4. **验证与测试**：
-   - 集成编译器进行语法检查
-   - 添加语义等价性的自动化验证
-   - 开发回归测试框架
+4. **验证增强**：
+   - 集成真实编译器进行完整编译测试
+   - 引入形式化验证方法
+   - 开发自动化修复建议
 
 5. **性能优化**：
    - 并行化 CFG 分析
@@ -1398,3 +1559,21 @@ $$
 | $v_{entry}$ | 入口节点 |
 | $V_{exit}$ | 出口节点集 |
 | $\text{dom}$ | 支配关系 |
+| $\mathcal{L}$ | LLM 函数 |
+| $T_{LLM}$ | LLM API 调用延迟 |
+| $R$ | 验证报告 |
+| $V$ | 验证选项 |
+
+---
+
+## 附录 B：验证错误代码表
+
+| 错误代码 | 级别 | 描述 |
+|---------|------|------|
+| `BRACKET_MISMATCH` | ERROR | 括号不匹配 |
+| `QUOTE_MISMATCH` | ERROR | 引号不匹配 |
+| `MISSING_SEMICOLON` | WARNING | 可能缺少分号 |
+| `INVALID_INSERTION` | CRITICAL | 插入位置无效 |
+| `UNDEFINED_VARIABLE` | MAJOR | 使用未定义变量 |
+| `DATA_FLOW_BREAK` | CRITICAL | 数据流中断 |
+| `LOGIC_CONFLICT` | MAJOR | 与原函数逻辑冲突 |
