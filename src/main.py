@@ -23,6 +23,7 @@ from cfg_analyzer import analyze_code_cfg, visualize_cfg
 from dominator_analyzer import analyze_dominators, get_fusion_points
 from llm_splitter import LLMCodeSplitter, split_code_for_call_chain
 from code_fusion import CodeFusionEngine, CallChain, FunctionInfo, analyze_call_chain_group
+from verification_agent import VerificationAgent, VerificationStatus, FullVerificationReport
 
 
 @dataclass
@@ -39,21 +40,30 @@ class ProcessingResult:
     global_declarations: str = ""  # 全局变量声明
     passing_method: str = "global"  # 变量传递方法
     parameter_struct: str = ""  # 参数结构体定义
+    # 验证相关
+    verification_passed: bool = True  # 验证是否通过
+    verification_errors: List[str] = None  # 验证错误列表
+    verification_warnings: List[str] = None  # 验证警告列表
 
 
 class CodeFusionProcessor:
     """代码融合处理器"""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, enable_verification: bool = True,
+                 enable_syntax_check: bool = True, enable_semantic_check: bool = True):
         """
         初始化处理器
         
         Args:
             api_key: API 密钥
+            enable_verification: 是否启用验证
+            enable_syntax_check: 是否启用语法验证
+            enable_semantic_check: 是否启用语义审查
         """
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         self.splitter = None
         self.engine = None
+        self.verification_agent = None
         
         if self.api_key:
             try:
@@ -61,6 +71,17 @@ class CodeFusionProcessor:
                 self.engine = CodeFusionEngine(splitter=self.splitter)
             except Exception as e:
                 print(f"Warning: Failed to initialize LLM splitter: {e}")
+        
+        # 初始化验证 Agent
+        if enable_verification:
+            try:
+                self.verification_agent = VerificationAgent(
+                    enable_syntax=enable_syntax_check,
+                    enable_semantic=enable_semantic_check,
+                    api_key=self.api_key
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize verification agent: {e}")
     
     def load_data(self, input_path: str) -> Dict:
         """
@@ -139,6 +160,34 @@ class CodeFusionProcessor:
             global_decl = slice_result.global_declarations if slice_result else ""
             param_struct = slice_result.parameter_struct if slice_result else ""
             
+            # 验证融合后的代码
+            verification_passed = True
+            verification_errors = []
+            verification_warnings = []
+            
+            if self.verification_agent and fused_code:
+                # 构建原始函数和插入代码的映射
+                original_functions = {f.name: f.code for f in chain.functions}
+                inserted_slices = {}
+                if slice_result:
+                    for i, s in enumerate(slice_result.slices):
+                        if i < len(chain.functions):
+                            inserted_slices[chain.functions[i].name] = s.code
+                
+                # 执行验证
+                verification_report = self.verification_agent.verify_all(
+                    fused_code=fused_code,
+                    original_functions=original_functions,
+                    inserted_slices=inserted_slices,
+                    shared_state=slice_result.shared_state if slice_result else None
+                )
+                
+                # 收集验证结果
+                verification_passed = verification_report.overall_status != VerificationStatus.FAILED
+                for func_name, report in verification_report.reports.items():
+                    verification_errors.extend(report.error_messages)
+                    verification_warnings.extend(report.warning_messages)
+            
             return ProcessingResult(
                 group_index=group_index,
                 call_chain=call_chain,
@@ -149,7 +198,10 @@ class CodeFusionProcessor:
                 success=True,
                 global_declarations=global_decl,
                 passing_method=passing_method,
-                parameter_struct=param_struct
+                parameter_struct=param_struct,
+                verification_passed=verification_passed,
+                verification_errors=verification_errors,
+                verification_warnings=verification_warnings
             )
             
         except Exception as e:
@@ -215,6 +267,16 @@ class CodeFusionProcessor:
             
             if result.success:
                 print(f"  Status: SUCCESS")
+                # 显示验证结果
+                if result.verification_passed:
+                    if result.verification_warnings:
+                        print(f"  Verification: ⚠️ PASSED with {len(result.verification_warnings)} warnings")
+                    else:
+                        print(f"  Verification: ✅ PASSED")
+                else:
+                    print(f"  Verification: ❌ FAILED ({len(result.verification_errors or [])} errors)")
+                    for err in (result.verification_errors or [])[:3]:
+                        print(f"    - {err}")
                 processed += 1
             else:
                 print(f"  Status: FAILED - {result.error_message}")
@@ -238,7 +300,9 @@ class CodeFusionProcessor:
                 "target_code": target_code,
                 "total_processed": len(results),
                 "successful": sum(1 for r in results if r.success),
-                "failed": sum(1 for r in results if not r.success)
+                "failed": sum(1 for r in results if not r.success),
+                "verification_passed": sum(1 for r in results if r.success and r.verification_passed),
+                "verification_failed": sum(1 for r in results if r.success and not r.verification_passed)
             },
             "results": []
         }
@@ -252,7 +316,10 @@ class CodeFusionProcessor:
                 "total_fusion_points": result.total_fusion_points,
                 "success": result.success,
                 "error_message": result.error_message,
-                "fused_code": result.fused_code
+                "fused_code": result.fused_code,
+                "verification_passed": result.verification_passed,
+                "verification_errors": result.verification_errors or [],
+                "verification_warnings": result.verification_warnings or []
             })
         
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -580,6 +647,24 @@ def main():
         help='变量传递方法: global（全局变量）或 parameter（参数传递）（默认 global）'
     )
     
+    parser.add_argument(
+        '--no-verify',
+        action='store_true',
+        help='禁用代码验证'
+    )
+    
+    parser.add_argument(
+        '--no-syntax-check',
+        action='store_true',
+        help='禁用语法检查'
+    )
+    
+    parser.add_argument(
+        '--no-semantic-check',
+        action='store_true',
+        help='禁用语义审查（不调用 LLM 进行审查）'
+    )
+    
     args = parser.parse_args()
     
     # 检查输入文件
@@ -619,9 +704,24 @@ def main():
         args.output = os.path.join(output_dir, f'{base_name}_fused.json')
     
     # 创建处理器并执行
-    processor = CodeFusionProcessor()
+    enable_verification = not args.no_verify
+    enable_syntax = not args.no_syntax_check
+    enable_semantic = not args.no_semantic_check
+    
+    processor = CodeFusionProcessor(
+        enable_verification=enable_verification,
+        enable_syntax_check=enable_syntax,
+        enable_semantic_check=enable_semantic
+    )
     
     print(f"Using variable passing method: {args.method}")
+    if enable_verification:
+        checks = []
+        if enable_syntax:
+            checks.append("语法检查")
+        if enable_semantic:
+            checks.append("语义审查")
+        print(f"Verification enabled: {', '.join(checks) if checks else '无'}")
     
     results = processor.process_file(
         args.input,
@@ -633,12 +733,20 @@ def main():
     
     # 打印摘要
     successful = sum(1 for r in results if r.success)
+    verification_passed = sum(1 for r in results if r.success and r.verification_passed)
+    verification_failed = sum(1 for r in results if r.success and not r.verification_passed)
+    
     print(f"\n{'=' * 60}")
     print(f"Processing Summary")
     print(f"{'=' * 60}")
     print(f"Total processed: {len(results)}")
     print(f"Successful: {successful}")
     print(f"Failed: {len(results) - successful}")
+    
+    if enable_verification:
+        print(f"\nVerification Results:")
+        print(f"  ✅ Passed: {verification_passed}")
+        print(f"  ❌ Failed: {verification_failed}")
 
 
 if __name__ == '__main__':

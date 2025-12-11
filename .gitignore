@@ -1,2 +1,7 @@
 data/primevul_train_paired.jsonl
 data/primevul_train.jsonl
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class

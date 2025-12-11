@@ -624,7 +624,7 @@ class CodeFusionGenerator:
         # 在 { 后插入代码
         return (
             func_code[:brace_pos + 1] + 
-            f"\n    // --- Inserted code start ---\n    {insert_code}\n    // --- Inserted code end ---\n" +
+            f"\n    {insert_code}\n" +
             func_code[brace_pos + 1:]
         )
 

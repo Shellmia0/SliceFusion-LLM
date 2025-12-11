@@ -220,33 +220,196 @@ class CodeFusionEngine:
         """
         code = func.code
         
-        # 找到函数体开始
-        brace_pos = code.find('{')
+        # 找到函数体真正开始的位置（跳过签名后的注释）
+        brace_pos = self._find_function_body_start(code)
         if brace_pos == -1:
             return code
         
-        # 如果是入口块或第一个融合点，在函数体开头插入
+        # 如果是入口块或第一个融合点，在变量声明之后插入
         if block_id == func.cfg.entry_block_id or (func.fusion_points and block_id == func.fusion_points[0]):
             # 格式化插入代码
             insert_lines = insert_code.strip().split('\n')
             formatted_insert = '\n    '.join(insert_lines)
             
+            # 找到变量声明块的末尾位置
+            insert_pos = self._find_after_declarations(code, brace_pos)
+            
             return (
-                code[:brace_pos + 1] + 
-                f"\n    /* === Fused Code Start === */\n    {formatted_insert}\n    /* === Fused Code End === */\n" +
-                code[brace_pos + 1:]
+                code[:insert_pos] + 
+                f"\n    {formatted_insert}\n" +
+                code[insert_pos:]
             )
         
         # 否则尝试找到对应的基本块位置
         # 这里简化处理，在函数中间插入
         return self._insert_at_middle(code, insert_code)
     
+    def _find_function_body_start(self, code: str) -> int:
+        """
+        找到函数体真正开始的位置（跳过签名后的注释）
+        
+        处理以下格式：
+        1. void func(...) { ... }
+        2. void func(...) /* comment */ { ... }
+        3. void func(...) /* {{{ */ { ... }  (PHP/Zend 风格)
+        """
+        # 首先找到函数签名的结束（最后一个 ) ）
+        paren_count = 0
+        paren_end = -1
+        in_string = False
+        in_comment = False
+        
+        i = 0
+        while i < len(code):
+            # 跳过注释
+            if code[i:i+2] == '/*':
+                end = code.find('*/', i + 2)
+                if end != -1:
+                    i = end + 2
+                    continue
+                i += 1
+                continue
+            elif code[i:i+2] == '//':
+                end = code.find('\n', i + 2)
+                if end != -1:
+                    i = end + 1
+                    continue
+                break
+            
+            # 处理字符串
+            if code[i] in '"\'':
+                in_string = not in_string
+            if in_string:
+                i += 1
+                continue
+            
+            if code[i] == '(':
+                paren_count += 1
+            elif code[i] == ')':
+                paren_count -= 1
+                if paren_count == 0:
+                    paren_end = i
+            
+            i += 1
+        
+        if paren_end == -1:
+            # 没找到参数列表，直接找第一个不在注释中的 {
+            return self._find_brace_outside_comment(code, 0)
+        
+        # 从参数列表结束位置开始，找到第一个不在注释中的 {
+        return self._find_brace_outside_comment(code, paren_end + 1)
+    
+    def _find_brace_outside_comment(self, code: str, start: int) -> int:
+        """
+        从指定位置开始，找到第一个不在注释中的 {
+        
+        策略：使用状态机跳过注释，找到真正的函数体开始
+        """
+        i = start
+        while i < len(code):
+            # 跳过空白
+            while i < len(code) and code[i] in ' \t\n\r':
+                i += 1
+            
+            if i >= len(code):
+                break
+            
+            # 检查是否是注释开始
+            if code[i:i+2] == '/*':
+                # 找到注释结束位置
+                end = code.find('*/', i + 2)
+                if end == -1:
+                    break
+                i = end + 2
+                continue
+            elif code[i:i+2] == '//':
+                # 跳过单行注释
+                end = code.find('\n', i + 2)
+                if end == -1:
+                    break
+                i = end + 1
+                continue
+            elif code[i] == '{':
+                # 找到了函数体开始
+                return i
+            else:
+                # 可能是其他关键字或字符
+                i += 1
+        
+        # 备用方法：找到最后一个 */ 之后的第一个 {
+        last_comment_end = code.rfind('*/')
+        if last_comment_end != -1:
+            next_brace = code.find('{', last_comment_end + 2)
+            if next_brace != -1:
+                return next_brace
+        
+        return code.find('{')
+    
+    def _find_after_declarations(self, code: str, brace_pos: int) -> int:
+        """
+        找到变量声明块之后的位置
+        
+        在 C89 中，变量声明必须在函数开头。
+        我们需要在声明之后、第一个可执行语句之前插入代码。
+        """
+        # 从 { 之后开始分析
+        body_start = brace_pos + 1
+        
+        # 简单策略：找到第一个非声明语句
+        # 声明通常是：类型 变量名;  或 类型 变量名 = 值;
+        
+        lines = code[body_start:].split('\n')
+        current_pos = body_start
+        
+        declaration_patterns = [
+            r'^\s*(const\s+)?(unsigned\s+)?(static\s+)?(volatile\s+)?'
+            r'(int|char|short|long|float|double|void|bool|Bool|'
+            r'u8|u16|u32|u64|s8|s16|s32|s64|'
+            r'uint8_t|uint16_t|uint32_t|uint64_t|'
+            r'int8_t|int16_t|int32_t|int64_t|'
+            r'size_t|ssize_t|'
+            r'UINT|UINT8|UINT16|UINT32|UINT64|'
+            r'BYTE|WORD|DWORD|BOOL|'
+            r'GF_\w+|EFI_\w+|zval|zend_\w+|'
+            r'\w+_t|\w+\s*\*)\s+\w+'
+        ]
+        
+        import re
+        decl_pattern = re.compile(declaration_patterns[0], re.IGNORECASE)
+        
+        last_decl_end = body_start
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # 跳过空行和注释
+            if not stripped or stripped.startswith('//') or stripped.startswith('/*'):
+                current_pos += len(line) + 1
+                continue
+            
+            # 检查是否是变量声明
+            if decl_pattern.match(stripped) and ';' in stripped and '(' not in stripped:
+                # 这是一个声明行
+                last_decl_end = current_pos + len(line) + 1
+                current_pos += len(line) + 1
+                continue
+            
+            # 遇到非声明语句，停止
+            break
+        
+        # 如果找到了声明，在声明之后插入
+        if last_decl_end > body_start:
+            return last_decl_end
+        
+        # 否则在 { 之后插入
+        return body_start
+    
     def _insert_at_middle(self, func_code: str, insert_code: str) -> str:
         """
         在函数中间位置插入代码
         """
-        # 找到函数体
-        brace_start = func_code.find('{')
+        # 找到函数体真正开始位置
+        brace_start = self._find_function_body_start(func_code)
         brace_end = func_code.rfind('}')
         
         if brace_start == -1 or brace_end == -1:
@@ -261,9 +424,7 @@ class CodeFusionEngine:
         insert_lines = insert_code.strip().split('\n')
         formatted_insert = '\n    '.join(insert_lines)
         
-        lines.insert(mid, f"    /* === Fused Code Start === */")
-        lines.insert(mid + 1, f"    {formatted_insert}")
-        lines.insert(mid + 2, f"    /* === Fused Code End === */")
+        lines.insert(mid, f"    {formatted_insert}")
         
         return func_code[:brace_start + 1] + '\n'.join(lines) + func_code[brace_end:]
 
