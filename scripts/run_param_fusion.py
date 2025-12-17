@@ -1,189 +1,271 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-运行参数传递法融合，并生成不带注释标记的代码文件
+参数传递法融合 - 支持多参数传递和多组测试
 """
 
 import os
 import sys
 import json
 import re
+import argparse
 
-# 添加 src 目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
-from main import CodeFusionProcessor
+from openai import OpenAI
 
 
-def remove_fusion_markers(code: str) -> str:
-    """移除融合标记注释"""
-    # 移除 /* === Fused Code Start === */ 和 /* === Fused Code End === */ 及其包裹的内容保持
-    patterns = [
-        r'/\*\s*===\s*Fused Code Start\s*===\s*\*/\s*\n?',
-        r'/\*\s*===\s*Fused Code End\s*===\s*\*/\s*\n?',
-        r'/\*\s*中间层函数.*?\*/\s*\n?',
-    ]
-    
-    result = code
-    for pattern in patterns:
-        result = re.sub(pattern, '', result)
-    
-    # 清理多余的空行
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    
+def get_llm_client():
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        raise ValueError("请设置 DASHSCOPE_API_KEY 环境变量")
+    return OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+
+def get_original_functions(functions: list, call_chain: list) -> dict:
+    result = {}
+    for func_name in call_chain:
+        for func in functions:
+            code = func.get('func', '')
+            if func_name in code:
+                result[func_name] = code
+                break
     return result
 
 
-def generate_clean_code_file(result, target_code: str) -> str:
-    """生成干净的代码文件（不带标记注释）"""
-    lines = []
+def create_prompt(target_code: str, original_funcs: dict, call_chain: list) -> str:
+    funcs_text = ""
+    for name in call_chain:
+        if name in original_funcs:
+            funcs_text += f"=== {name} ===\n{original_funcs[name]}\n\n"
     
-    # 文件头
-    lines.append("/*")
-    lines.append(" * 参数传递法融合代码")
-    lines.append(f" * 调用链: {' -> '.join(result['call_chain'])}")
-    lines.append(f" * 调用深度: {result['call_depth']}")
-    lines.append(" *")
-    lines.append(" * 原始目标代码:")
-    for line in target_code.strip().split('\n'):
-        lines.append(f" *   {line.strip()}")
-    lines.append(" */")
-    lines.append("")
+    n = len(call_chain)
     
-    # 头文件
-    lines.append("#include <stdio.h>")
-    lines.append("#include <stdlib.h>")
-    lines.append("#include <string.h>")
-    lines.append("")
+    return f"""将目标代码通过参数传递方式融合到调用链函数中。
+
+目标代码:
+{target_code}
+
+调用链 ({n} 层): {' -> '.join(call_chain)}
+
+原始函数:
+{funcs_text}
+
+融合规则（参数传递法）:
+1. 分析目标代码中的所有变量和操作
+2. 将变量初始化、计算、使用分散到调用链的不同层级
+3. 通过添加函数参数（指针）在层级间传递变量
+4. 每个函数可以传递多个参数
+
+具体要求:
+- 第1层（{call_chain[0]}）：定义初始变量，通过指针传递给下一层
+- 中间层：接收上层参数，执行计算，传递结果给下一层
+- 最后层（{call_chain[-1]}）：接收参数，执行最终操作（如printf）
+
+输出要求:
+- 每个函数输出完整代码
+- 不要添加任何注释
+- 保持原函数逻辑完整
+
+返回格式:
+{{
+{', '.join([f'"{name}": "完整函数代码"' for name in call_chain])}
+}}"""
+
+
+def remove_comments(code: str) -> str:
+    code = re.sub(r'//.*?$', '', code, flags=re.MULTILINE)
+    code = re.sub(r'/\*[\s\S]*?\*/', '', code)
+    code = re.sub(r'\n{3,}', '\n\n', code)
+    return code.strip()
+
+
+def parse_response(response: str) -> dict:
+    def try_parse(text):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        return None
     
-    # 结构体定义（全局状态）
-    lines.append("/* 共享状态结构体 */")
-    lines.append("typedef struct {")
-    lines.append("    int secret;")
-    lines.append("    int key;")
-    lines.append("} FusionState;")
-    lines.append("")
-    lines.append("/* 全局状态指针 */")
-    lines.append("static FusionState* fusion_state = NULL;")
-    lines.append("")
+    match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
+    if match:
+        result = try_parse(match.group(1))
+        if result:
+            return result
     
-    # 函数定义（从最内层到最外层）
-    lines.append("/* ========== 函数定义 ========== */")
-    lines.append("")
+    result = try_parse(response)
+    if result:
+        return result
     
-    fused_code = result.get('fused_code', {})
-    call_chain = result.get('call_chain', [])
+    match = re.search(r'\{[\s\S]*\}', response)
+    if match:
+        result = try_parse(match.group(0))
+        if result:
+            return result
     
-    for func_name in reversed(call_chain):
-        if func_name in fused_code:
-            lines.append(f"/* {func_name} */")
-            clean_code = remove_fusion_markers(fused_code[func_name])
-            lines.append(clean_code)
+    try:
+        result = {}
+        func_pattern = r'"(\w+)":\s*"((?:[^"\\]|\\.)*)(?:"|$)'
+        for match in re.finditer(func_pattern, response, re.DOTALL):
+            name = match.group(1)
+            code = match.group(2)
+            code = code.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+            result[name] = code
+        if result:
+            return result
+    except:
+        pass
+    
+    return None
+
+
+def process_group(client, group: dict, target_code: str, group_idx: int) -> dict:
+    """处理单个调用链组"""
+    functions = group['functions']
+    call_chain = group['longest_call_chain']
+    
+    original_funcs = get_original_functions(functions, call_chain)
+    
+    if len(original_funcs) < len(call_chain):
+        return {"success": False, "error": "无法提取所有函数", "call_chain": call_chain}
+    
+    prompt = create_prompt(target_code, original_funcs, call_chain)
+    
+    try:
+        completion = client.chat.completions.create(
+            model="qwen-plus",
+            messages=[
+                {"role": "system", "content": "你是代码融合专家。只返回JSON，不要添加任何注释到代码中。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+        )
+        
+        response = completion.choices[0].message.content
+        result = parse_response(response)
+        
+        if not result:
+            return {"success": False, "error": "JSON解析失败", "call_chain": call_chain}
+        
+        for name in result:
+            result[name] = remove_comments(result[name])
+        
+        return {
+            "success": True,
+            "group_idx": group_idx,
+            "call_chain": call_chain,
+            "fused_functions": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "call_chain": call_chain}
+
+
+def generate_code_file(result: dict) -> str:
+    """生成代码文件内容"""
+    call_chain = result['call_chain']
+    fused_functions = result['fused_functions']
+    
+    lines = ["#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>", ""]
+    for name in reversed(call_chain):
+        if name in fused_functions:
+            lines.append(fused_functions[name])
             lines.append("")
     
     return '\n'.join(lines)
 
 
 def main():
-    # 配置
-    input_path = "output/primevul_valid_grouped_depth_4.json"
-    output_json = "output/fusion_param_clean.json"
-    output_code = "output/fused_code/param_fusion_clean.c"
+    parser = argparse.ArgumentParser(description='参数传递法融合')
+    parser.add_argument('--target', '-t', type=str, default=None, help='目标代码')
+    parser.add_argument('--groups', '-g', type=int, default=1, help='测试组数（默认1）')
+    parser.add_argument('--multi', '-m', action='store_true', help='使用多参数测试用例')
+    args = parser.parse_args()
     
-    target_code = "int secret = 42; int key = secret ^ 0xABCD; printf(\"key=%d\", key);"
-    
-    # 检查输入文件
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    input_full_path = os.path.join(project_root, input_path)
+    input_path = os.path.join(project_root, "output/primevul_valid_grouped_depth_4.json")
+    output_dir = os.path.join(project_root, "output")
+    code_dir = os.path.join(output_dir, "fused_code")
     
-    if not os.path.exists(input_full_path):
-        print(f"Error: Input file not found: {input_full_path}")
-        sys.exit(1)
+    if args.target:
+        target_code = args.target
+    elif args.multi:
+        target_code = 'int a = 10; int b = 20; int c = a + b; printf("sum=%d, a=%d, b=%d", c, a, b);'
+    else:
+        target_code = 'int secret = 42; int key = secret ^ 0xABCD; printf("key=%d", key);'
     
     print("=" * 60)
-    print("参数传递法融合（无标记注释）")
+    print(f"参数传递法融合 - 测试 {args.groups} 组")
     print("=" * 60)
-    print(f"\n目标代码: {target_code}")
-    print(f"输入文件: {input_path}")
-    print(f"输出JSON: {output_json}")
-    print(f"输出代码: {output_code}")
-    print("")
+    print(f"目标代码: {target_code}\n")
     
-    # 创建处理器
-    processor = CodeFusionProcessor(
-        enable_verification=False,  # 禁用验证以加快速度
-        enable_syntax_check=False,
-        enable_semantic_check=False
-    )
+    with open(input_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
     
-    # 加载数据
-    data = processor.load_data(input_full_path)
-    groups = data.get('groups', [])
+    groups = data['groups']
+    num_groups = min(args.groups, len(groups))
     
-    print(f"共有 {len(groups)} 个调用链组")
-    print(f"选择第一个组进行融合...")
-    print("")
+    print(f"可用调用链组: {len(groups)}")
+    print(f"将测试: {num_groups} 组\n")
     
-    # 处理第一个组
-    group = groups[0]
-    result = processor.process_group(
-        group,
-        target_code,
-        group_index=0,
-        passing_method="parameter"
-    )
+    client = get_llm_client()
+    results = []
+    success_count = 0
     
-    if not result.success:
-        print(f"融合失败: {result.error_message}")
-        sys.exit(1)
+    for i in range(num_groups):
+        group = groups[i]
+        call_chain = group['longest_call_chain']
+        
+        print(f"[{i+1}/{num_groups}] 处理: {' -> '.join(call_chain[:2])}...")
+        
+        result = process_group(client, group, target_code, i)
+        results.append(result)
+        
+        if result['success']:
+            success_count += 1
+            print(f"       ✓ 成功")
+            
+            # 保存单独的代码文件
+            chain_name = "_".join(call_chain[:2])
+            code_file = os.path.join(code_dir, f"param_group_{i}_{chain_name}.c")
+            code_content = generate_code_file(result)
+            
+            os.makedirs(code_dir, exist_ok=True)
+            with open(code_file, 'w', encoding='utf-8') as f:
+                f.write(code_content)
+        else:
+            print(f"       ✗ 失败: {result['error']}")
     
-    print(f"融合成功!")
-    print(f"调用链: {' -> '.join(result.call_chain)}")
-    print(f"融合点数: {result.total_fusion_points}")
-    print("")
-    
-    # 保存 JSON 结果
+    # 保存汇总 JSON
+    output_json = os.path.join(output_dir, "fusion_param_results.json")
     output_data = {
         "metadata": {
             "target_code": target_code,
             "passing_method": "parameter",
-            "total_processed": 1,
-            "successful": 1
+            "total_groups": num_groups,
+            "success_count": success_count,
+            "failed_count": num_groups - success_count
         },
-        "results": [{
-            "group_index": result.group_index,
-            "call_chain": result.call_chain,
-            "call_depth": result.call_depth,
-            "functions_count": result.functions_count,
-            "total_fusion_points": result.total_fusion_points,
-            "success": result.success,
-            "fused_code": result.fused_code
-        }]
+        "results": results
     }
     
-    output_json_path = os.path.join(project_root, output_json)
-    os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
-    
-    with open(output_json_path, 'w', encoding='utf-8') as f:
+    with open(output_json, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
     
-    print(f"JSON 结果已保存到: {output_json}")
-    
-    # 生成干净的代码文件
-    clean_code = generate_clean_code_file(output_data['results'][0], target_code)
-    
-    output_code_path = os.path.join(project_root, output_code)
-    os.makedirs(os.path.dirname(output_code_path), exist_ok=True)
-    
-    with open(output_code_path, 'w', encoding='utf-8') as f:
-        f.write(clean_code)
-    
-    print(f"代码文件已保存到: {output_code}")
-    print("")
+    print("\n" + "=" * 60)
+    print("测试结果汇总")
     print("=" * 60)
-    print("融合后的代码预览:")
-    print("=" * 60)
-    print(clean_code)
+    print(f"成功: {success_count}/{num_groups}")
+    print(f"失败: {num_groups - success_count}/{num_groups}")
+    print(f"JSON: {output_json}")
+    print(f"代码目录: {code_dir}")
+    
+    # 显示成功的结果
+    if success_count > 0:
+        print("\n成功的调用链:")
+        for r in results:
+            if r['success']:
+                print(f"  - Group {r['group_idx']}: {' -> '.join(r['call_chain'])}")
 
 
 if __name__ == '__main__':
