@@ -5,3 +5,4 @@ data/primevul_train.jsonl
 __pycache__/
 *.py[cod]
 *$py.class
+src/__pycache__/
