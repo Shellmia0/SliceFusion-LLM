@@ -1,8 +1,31 @@
-data/primevul_train_paired.jsonl
-data/primevul_train.jsonl
-
-# Python cache
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-src/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Large intermediate data (not needed for reproduction)
+output/primevul_valid_grouped.json
+output/primevul_valid_grouped_depth_2+.json
+output/primevul_valid_grouped_depth_3-5.json
+output/batch_fusion_results.json
+output/batch_fusion_100.json
+output/batch_fusion_v2.json
+output/fused_code/
+
+# Raw datasets (too large for git, document download instructions)
+data/primevul_valid.jsonl
+data/primevul_test.jsonl
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+batch_fusion*.log
+
+# OS
+.DS_Store
