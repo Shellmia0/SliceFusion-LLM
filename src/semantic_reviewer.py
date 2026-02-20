@@ -133,6 +133,8 @@ class SemanticReviewer:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
+                max_tokens=4096,
+                extra_body={"enable_thinking": False},
             )
             
             response_text = completion.choices[0].message.content
@@ -394,6 +396,8 @@ class SemanticReviewer:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
+                max_tokens=4096,
+                extra_body={"enable_thinking": False},
             )
             
             response_text = completion.choices[0].message.content

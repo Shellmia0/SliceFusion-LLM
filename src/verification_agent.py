@@ -127,7 +127,8 @@ class VerificationAgent:
         self,
         enable_syntax: bool = True,
         enable_semantic: bool = True,
-        api_key: str = None
+        api_key: str = None,
+        model: str = None
     ):
         """
         初始化验证 Agent
@@ -136,6 +137,7 @@ class VerificationAgent:
             enable_syntax: 是否启用语法验证
             enable_semantic: 是否启用语义审查
             api_key: LLM API 密钥（语义审查需要）
+            model: LLM 模型名称
         """
         self.enable_syntax = enable_syntax
         self.enable_semantic = enable_semantic
@@ -147,7 +149,7 @@ class VerificationAgent:
         self.semantic_reviewer = None
         if enable_semantic:
             try:
-                self.semantic_reviewer = SemanticReviewer(api_key=api_key)
+                self.semantic_reviewer = SemanticReviewer(api_key=api_key, model=model)
             except ValueError as e:
                 print(f"Warning: 语义审查器初始化失败: {e}")
                 self.enable_semantic = False

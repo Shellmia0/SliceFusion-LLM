@@ -50,7 +50,8 @@ class CodeFusionProcessor:
     """代码融合处理器"""
     
     def __init__(self, api_key: str = None, enable_verification: bool = True,
-                 enable_syntax_check: bool = True, enable_semantic_check: bool = True):
+                 enable_syntax_check: bool = True, enable_semantic_check: bool = True,
+                 model: str = None):
         """
         初始化处理器
         
@@ -59,15 +60,17 @@ class CodeFusionProcessor:
             enable_verification: 是否启用验证
             enable_syntax_check: 是否启用语法验证
             enable_semantic_check: 是否启用语义审查
+            model: LLM 模型名称
         """
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
+        self.model = model
         self.splitter = None
         self.engine = None
         self.verification_agent = None
         
         if self.api_key:
             try:
-                self.splitter = LLMCodeSplitter(api_key=self.api_key)
+                self.splitter = LLMCodeSplitter(api_key=self.api_key, model=model)
                 self.engine = CodeFusionEngine(splitter=self.splitter)
             except Exception as e:
                 print(f"Warning: Failed to initialize LLM splitter: {e}")
@@ -78,7 +81,8 @@ class CodeFusionProcessor:
                 self.verification_agent = VerificationAgent(
                     enable_syntax=enable_syntax_check,
                     enable_semantic=enable_semantic_check,
-                    api_key=self.api_key
+                    api_key=self.api_key,
+                    model=model
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize verification agent: {e}")
