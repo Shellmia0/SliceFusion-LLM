@@ -20,7 +20,7 @@ import threading
 
 from openai import OpenAI
 
-API_KEY = "REDACTED_API_KEY"
+API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
 BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 MODEL = "qwen3.5-plus-2026-02-15"
 

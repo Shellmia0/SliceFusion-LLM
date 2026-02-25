@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from main import CodeFusionProcessor
 
 MODEL = "qwen3.5-plus-2026-02-15"
-API_KEY = "REDACTED_API_KEY"
+API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
 WORKERS = 4
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'output', 'ch3_experiments')
 

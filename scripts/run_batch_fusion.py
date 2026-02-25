@@ -108,7 +108,7 @@ void process_user_input(char *user_data) {
     print(f"Workers: {args.workers}, Verify: {not args.no_verify}")
 
     # Init processor
-    api_key = os.environ.get("DASHSCOPE_API_KEY", "REDACTED_API_KEY")
+    api_key = os.environ.get("DASHSCOPE_API_KEY", "")
     processor = CodeFusionProcessor(
         api_key=api_key,
         enable_verification=not args.no_verify,
