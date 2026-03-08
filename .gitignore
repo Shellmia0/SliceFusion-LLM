@@ -29,3 +29,5 @@ batch_fusion*.log
 
 # OS
 .DS_Store
+output/
+data/
